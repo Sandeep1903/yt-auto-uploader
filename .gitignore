@@ -1,0 +1,45 @@
+# ── Credentials & Auth (NEVER commit these) ──────────────────────────────────
+token.json
+client_secret*.json
+*.json.bak
+
+# ── App state ─────────────────────────────────────────────────────────────────
+schedule_log.json
+
+# ── Video & media files ───────────────────────────────────────────────────────
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+*.flv
+*.wmv
+*.jpg
+*.jpeg
+*.png
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+
+# ── OS junk ───────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+

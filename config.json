@@ -1,0 +1,10 @@
+{
+  "publish_time": "18:00",
+  "schedule_publish": true,
+  "auto_stagger_days": true,
+  "default_tags": ["video"],
+  "default_category_id": "22",
+  "made_for_kids": false,
+  "client_secrets_file": "client_secret.json",
+  "token_file": "token.json"
+}

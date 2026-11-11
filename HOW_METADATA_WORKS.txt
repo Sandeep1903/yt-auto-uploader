@@ -1,0 +1,14 @@
+[Optional Metadata Guide]
+Drop any video directly into this folder, e.g. "My_Vlog.mp4".
+
+If you want custom title, tags, or thumbnail:
+1. Title and Description: Create "My_Vlog.txt":
+   Line 1: My Custom Video Title
+   Line 2: tag1, tag2, travel, gaming
+   Line 3+: Full video description goes here!
+
+2. Thumbnail: Drop "My_Vlog.jpg" or "My_Vlog.png":
+   The uploader will automatically set it as the custom thumbnail!
+
+* If you don't add a .txt file, the video's file name is automatically used as the title.
+* When uploaded, files are automatically renamed to "[DONE] My_Vlog.mp4".
