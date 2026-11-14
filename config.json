@@ -1,11 +1,21 @@
 {
+  "enable_youtube": true,
+  "enable_instagram": true,
   "publish_time": "18:00",
   "schedule_publish": true,
   "auto_stagger_days": true,
   "videos_folder": "videos",
-  "default_tags": ["video"],
+  "default_tags": [
+    "video"
+  ],
   "default_category_id": "22",
   "made_for_kids": false,
   "client_secrets_file": "client_secret.json",
-  "token_file": "token.json"
+  "token_file": "token.json",
+  "instagram": {
+    "username": "know_the_whys",
+    "password": "S@ndeep1272",
+    "session_file": "ig_session.json",
+    "as_reel": true
+  }
 }

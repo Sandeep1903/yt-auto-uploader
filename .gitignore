@@ -1,6 +1,7 @@
 # ── Credentials & Auth (NEVER commit these) ──────────────────────────────────
 token.json
 client_secret*.json
+ig_session*.json
 *.json.bak
 
 # ── App state ─────────────────────────────────────────────────────────────────

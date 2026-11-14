@@ -1,6 +1,6 @@
-# 🎬 YouTube Auto-Uploader
+# 🎬 Auto-Uploader (YouTube & Instagram)
 
-> **Drop videos → Run one file → YouTube schedules them automatically, one per day.**
+> **Drop videos → Run one file → Automatically uploads & schedules to YouTube and Instagram Reels.**
 
 No coding knowledge needed. Everything lives in a single folder. Works on Windows.
 
@@ -25,14 +25,15 @@ No coding knowledge needed. Everything lives in a single folder. Works on Window
 
 | Feature | Details |
 |---|---|
+| 🌐 **Multi-Platform** | Upload simultaneously to **YouTube** and **Instagram Reels** |
 | ✅ **One-click upload** | Double-click `run_now.bat` — done |
-| 📅 **Auto scheduling** | Each video gets its own unique day, no clashes |
+| 📅 **Auto scheduling** | Each video gets its own unique day on YouTube, no clashes |
 | 🗓️ **Custom date picker** | Per-video prompt: auto-assign or enter your own date |
 | 🔁 **Background watcher** | `start_watcher.bat` monitors the folder 24/7 |
-| 🏷️ **Rich metadata** | Set custom title, tags, description, and thumbnail per video |
+| 🏷️ **Rich metadata** | Sets title, hashtags, description, and cover thumbnail automatically |
 | 🛡️ **Never double-uploads** | Processed videos are renamed `[DONE]` automatically |
 | 💾 **Persistent schedule log** | `schedule_log.json` remembers booked dates across runs |
-| 🔐 **Secure auth** | OAuth 2.0 — your password is never stored |
+| 🔐 **Secure auth** | YouTube OAuth 2.0 & Instagram encrypted session caching (`ig_session.json`) |
 
 ---
 
@@ -242,25 +243,40 @@ Edit `config.json` to customise behaviour:
 
 ```json
 {
+  "enable_youtube": true,
+  "enable_instagram": true,
   "publish_time": "18:00",
   "schedule_publish": true,
   "auto_stagger_days": true,
+  "videos_folder": "videos",
   "default_tags": ["video"],
   "default_category_id": "22",
   "made_for_kids": false,
   "client_secrets_file": "client_secret.json",
-  "token_file": "token.json"
+  "token_file": "token.json",
+  "instagram": {
+    "username": "",
+    "password": "",
+    "session_file": "ig_session.json",
+    "as_reel": true
+  }
 }
 ```
 
 | Key | Default | Description |
 |---|---|---|
-| `publish_time` | `"18:00"` | Time all scheduled videos go public (24-hour, your local time) |
-| `schedule_publish` | `true` | `false` = upload as private with no schedule |
-| `auto_stagger_days` | `true` | `false` = all videos get the same day (not recommended) |
-| `default_tags` | `["video"]` | Fallback tags when no `.txt`/`.json` metadata file exists |
+| `enable_youtube` | `true` | Set `true` to upload to YouTube |
+| `enable_instagram` | `true` | Set `true` to upload to Instagram |
+| `instagram.username` | `""` | Instagram username (or set via `IG_USERNAME` env variable; prompts if empty) |
+| `instagram.password` | `""` | Instagram password (or set via `IG_PASSWORD` env variable; prompts if empty) |
+| `instagram.session_file` | `"ig_session.json"` | Stores login cookies so you don't re-login every run |
+| `instagram.as_reel` | `true` | Upload as Instagram Reel (`true`) or regular feed video (`false`) |
+| `publish_time` | `"18:00"` | YouTube scheduled publish time (24-hour, local time) |
+| `schedule_publish` | `true` | YouTube scheduling (`false` = upload private unscheduled) |
+| `auto_stagger_days` | `true` | YouTube one-video-per-day auto-stagger |
+| `default_tags` | `["video"]` | Fallback tags / hashtags when no `.txt`/`.json` file exists |
 | `default_category_id` | `"22"` | YouTube category — `22` = People & Blogs |
-| `made_for_kids` | `false` | Set `true` if content is made for children |
+| `made_for_kids` | `false` | YouTube COPPA setting |
 
 **Common YouTube category IDs:**
 

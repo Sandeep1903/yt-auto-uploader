@@ -24,6 +24,12 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
 
+try:
+    from instagram_uploader import get_instagram_client, upload_video_to_instagram
+except ImportError:
+    get_instagram_client = None
+    upload_video_to_instagram = None
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -48,6 +54,8 @@ SCHEDULE_LOG_FILE = BASE_DIR / "schedule_log.json"
 
 def load_config():
     default_config = {
+        "enable_youtube": True,
+        "enable_instagram": False,
         "publish_time": "18:00",
         "schedule_publish": True,
         "auto_stagger_days": True,
@@ -56,7 +64,13 @@ def load_config():
         "default_category_id": "22",
         "made_for_kids": False,
         "client_secrets_file": "client_secret.json",
-        "token_file": "token.json"
+        "token_file": "token.json",
+        "instagram": {
+            "username": "",
+            "password": "",
+            "session_file": "ig_session.json",
+            "as_reel": True
+        }
     }
     if CONFIG_FILE.exists():
         try:
@@ -397,20 +411,17 @@ def mark_files_with_prefix(video_path: Path, prefix: str):
 def process_queue():
     config = load_config()
 
+    enable_yt = config.get("enable_youtube", True)
+    enable_ig = config.get("enable_instagram", False)
+
+    if not enable_yt and not enable_ig:
+        logger.warning("Both YouTube and Instagram are disabled in config.json. Nothing to do.")
+        return
+
     # Resolve the videos folder (default: BASE_DIR/videos)
     videos_folder_name = config.get("videos_folder", "videos")
     video_dir = BASE_DIR / videos_folder_name
     video_dir.mkdir(exist_ok=True)  # auto-create if missing
-
-    # First-time run check: authenticate early if token does not exist yet
-    token_path = BASE_DIR / config.get("token_file", "token.json")
-    if not token_path.exists():
-        logger.info("First-time run detected: Starting one-time YouTube account authorization...")
-        youtube = get_authenticated_service(config)
-        if not youtube:
-            return
-        logger.info("[OK] Authorization successful! Your channel is now connected.")
-        logger.info(f"Drop videos into the '{videos_folder_name}/' folder to upload them.")
 
     # Scan the videos subfolder for unprocessed video files
     video_files = [
@@ -420,21 +431,51 @@ def process_queue():
         and not f.name.startswith(("[DONE]", "[FAILED]"))
     ]
 
+    # Pre-authenticate YouTube if enabled
+    youtube = None
+    if enable_yt:
+        token_path = BASE_DIR / config.get("token_file", "token.json")
+        if not token_path.exists():
+            logger.info("First-time run detected: Starting one-time YouTube account authorization...")
+        youtube = get_authenticated_service(config)
+        if not youtube:
+            logger.error("YouTube authorization failed. Cannot upload to YouTube.")
+            if not enable_ig:
+                return
+
+    # Pre-authenticate Instagram if enabled
+    ig_client = None
+    if enable_ig:
+        if get_instagram_client is None:
+            logger.error("Instagram integration is enabled but instagram_uploader could not be imported.")
+            if not enable_yt:
+                return
+        else:
+            ig_client = get_instagram_client(config, interactive=True)
+            if not ig_client:
+                logger.error("Instagram authentication failed. Cannot upload to Instagram.")
+                if not enable_yt:
+                    return
+
     if not video_files:
         logger.info(f"No pending videos found in: {video_dir}")
         return
 
-    logger.info(f"Found {len(video_files)} video(s) ready for upload in '{videos_folder_name}/'")
+    platforms_str = []
+    if enable_yt and youtube:
+        platforms_str.append("YouTube")
+    if enable_ig and ig_client:
+        platforms_str.append("Instagram")
 
-    if token_path.exists():
-        youtube = get_authenticated_service(config)
-        if not youtube:
-            logger.error("Authentication could not be established. Aborting upload process.")
-            return
+    logger.info(
+        f"Found {len(video_files)} video(s) ready for upload to [{', '.join(platforms_str)}] "
+        f"in '{videos_folder_name}/'"
+    )
 
-    # Load the persistent schedule log so we never double-book a date
+    # Load the persistent schedule log for YouTube
     booked_dates = load_schedule_log()
-    logger.info(f"Already-booked dates: {sorted(booked_dates) or 'none'}")
+    if enable_yt:
+        logger.info(f"Already-booked YouTube dates: {sorted(booked_dates) or 'none'}")
 
     for video in video_files:
         logger.info("----------------------------------------")
@@ -446,24 +487,20 @@ def process_queue():
 
         metadata = parse_metadata(video, config)
 
+        # ── YouTube Scheduling ──────────────────────────────────────────────
         publish_at_utc = None
         date_key = None
-        if config.get("schedule_publish", True):
+        if enable_yt and youtube and config.get("schedule_publish", True):
             if metadata.get("custom_publish_at"):
-                # Honour an explicit publish_at from the companion .json file
                 publish_at_utc = metadata["custom_publish_at"]
             else:
                 publish_time_str = config.get("publish_time", "18:00")
-
-                # ── Ask user: custom date or auto? ─────────────────────────
                 custom = ask_custom_date(video.name, publish_time_str)
                 if custom:
-                    # User picked a specific date — book it regardless of conflicts
                     publish_at_utc, target_local, date_key = custom
                     booked_dates.add(date_key)
                     save_schedule_log(booked_dates)
                 else:
-                    # ── One-video-per-day: find next completely free date ──
                     publish_at_utc, target_local = next_free_date(
                         booked_dates,
                         publish_time_str
@@ -471,25 +508,50 @@ def process_queue():
                     date_key = target_local.strftime("%Y-%m-%d")
                     booked_dates.add(date_key)
                     save_schedule_log(booked_dates)
-                    logger.info(f"Target Scheduled Release: {target_local.strftime('%Y-%m-%d %I:%M %p %Z')}")
+                    logger.info(f"Target YouTube Release: {target_local.strftime('%Y-%m-%d %I:%M %p %Z')}")
 
-        try:
-            upload_video_chunked(
-                youtube=youtube,
-                video_path=video,
-                metadata=metadata,
-                publish_at_utc=publish_at_utc,
-                made_for_kids=config.get("made_for_kids", False)
-            )
+        yt_ok = False
+        ig_ok = False
+
+        # ── 1. Upload to YouTube ─────────────────────────────────────────────
+        if enable_yt and youtube:
+            try:
+                upload_video_chunked(
+                    youtube=youtube,
+                    video_path=video,
+                    metadata=metadata,
+                    publish_at_utc=publish_at_utc,
+                    made_for_kids=config.get("made_for_kids", False)
+                )
+                yt_ok = True
+            except Exception as e:
+                logger.error(f"[YouTube] Upload failed for {video.name}: {e}", exc_info=True)
+                if date_key:
+                    booked_dates.discard(date_key)
+                    save_schedule_log(booked_dates)
+
+        # ── 2. Upload to Instagram ───────────────────────────────────────────
+        if enable_ig and ig_client:
+            try:
+                as_reel = config.get("instagram", {}).get("as_reel", True)
+                upload_video_to_instagram(
+                    cl=ig_client,
+                    video_path=video,
+                    metadata=metadata,
+                    as_reel=as_reel
+                )
+                ig_ok = True
+            except Exception as e:
+                logger.error(f"[Instagram] Upload failed for {video.name}: {e}", exc_info=True)
+
+        # ── Status Check ─────────────────────────────────────────────────────
+        all_succeeded = (not enable_yt or yt_ok) and (not enable_ig or ig_ok)
+        if all_succeeded:
             mark_files_with_prefix(video, "[DONE]")
             logger.info(f"Upload complete! Marked as '[DONE] {video.name}'")
-        except Exception as e:
-            logger.error(f"Failed to upload {video.name}: {e}", exc_info=True)
-            # Release the reserved date so the slot can be reused next run
-            if date_key:
-                booked_dates.discard(date_key)
-                save_schedule_log(booked_dates)
+        else:
             mark_files_with_prefix(video, "[FAILED]")
+            logger.warning(f"Upload encountered errors. Marked as '[FAILED] {video.name}'")
 
 
 if __name__ == "__main__":
