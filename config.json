@@ -2,6 +2,7 @@
   "publish_time": "18:00",
   "schedule_publish": true,
   "auto_stagger_days": true,
+  "videos_folder": "videos",
   "default_tags": ["video"],
   "default_category_id": "22",
   "made_for_kids": false,

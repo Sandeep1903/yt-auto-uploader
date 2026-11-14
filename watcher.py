@@ -23,7 +23,8 @@ def main():
 
     logger.info("=" * 60)
     logger.info("YouTube Auto-Uploader Background Watcher Started")
-    logger.info(f"Folder: {BASE_DIR}")
+    logger.info(f"Root folder: {BASE_DIR}")
+    logger.info(f"Watching for videos in: {BASE_DIR / config.get('videos_folder', 'videos')}")
     logger.info(f"Target release time: {config.get('publish_time', '18:00')}")
     logger.info(f"Checking every {CHECK_INTERVAL_SECONDS} seconds. Press Ctrl+C to stop.")
     logger.info("=" * 60)

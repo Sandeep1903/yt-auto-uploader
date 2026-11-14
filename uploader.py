@@ -1,10 +1,11 @@
 """
 YouTube Auto-Uploader with Fixed-Time Scheduled Release
-All-in-one folder edition: drop your videos directly here!
 
 One-video-per-day rule: Each run assigns each pending video its own unique
-calendar date, starting from the next free day. A local schedule_log.json
-file tracks which dates are already booked so re-runs never double-book.
+calendar date, starting from today. A local schedule_log.json file tracks
+which dates are already booked so re-runs never double-book.
+
+Videos go in the 'videos/' subfolder — keeps scripts and media separate.
 """
 
 import os
@@ -50,6 +51,7 @@ def load_config():
         "publish_time": "18:00",
         "schedule_publish": True,
         "auto_stagger_days": True,
+        "videos_folder": "videos",
         "default_tags": ["video"],
         "default_category_id": "22",
         "made_for_kids": False,
@@ -67,11 +69,9 @@ def load_config():
 
 
 def find_client_secrets(config):
-    # Check configured path first
     p = BASE_DIR / config.get("client_secrets_file", "client_secret.json")
     if p.exists():
         return p
-    # Fallback checks in folder
     for f in BASE_DIR.glob("client_secret*.json"):
         return f
     return None
@@ -114,7 +114,6 @@ def get_authenticated_service(config):
             )
             creds = flow.run_local_server(port=0)
 
-        # Save token for next time
         with open(token_path, "w", encoding="utf-8") as token_file:
             token_file.write(creds.to_json())
         logger.info(f"Saved authentication token to {token_path.name}")
@@ -136,15 +135,32 @@ def get_authenticated_service(config):
 # ── Schedule log helpers ────────────────────────────────────────────────────
 
 def load_schedule_log() -> set:
-    """Return a set of already-booked date strings like '2026-11-11'."""
+    """
+    Return a set of already-booked date strings like '2026-11-14'.
+    Past dates (before today) are pruned automatically and the file is
+    updated on disk so it stays clean over time.
+    """
+    today = datetime.now().date()
+    raw: set = set()
+
     if SCHEDULE_LOG_FILE.exists():
         try:
             with open(SCHEDULE_LOG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return set(data.get("booked_dates", []))
+                raw = set(data.get("booked_dates", []))
         except Exception as e:
             logger.warning(f"Could not read schedule_log.json: {e}")
-    return set()
+
+    # Keep only today and future dates
+    cleaned = {d for d in raw if datetime.strptime(d, "%Y-%m-%d").date() >= today}
+
+    # If we actually removed something, persist the pruned version right away
+    if cleaned != raw:
+        removed = sorted(raw - cleaned)
+        logger.info(f"Pruned {len(removed)} past date(s) from schedule_log.json: {removed}")
+        save_schedule_log(cleaned)
+
+    return cleaned
 
 
 def save_schedule_log(booked_dates: set):
@@ -363,7 +379,7 @@ def is_file_ready(file_path: Path, wait_seconds: int = 3) -> bool:
 def mark_files_with_prefix(video_path: Path, prefix: str):
     """
     Renames the video and any companion files (.txt, .json, .jpg, .png)
-    with a prefix like '[DONE] ' or '[FAILED] ' so everything stays in the same folder.
+    with a prefix like '[DONE] ' or '[FAILED] ' so everything stays together.
     """
     base_name = video_path.stem
     parent = video_path.parent
@@ -381,6 +397,11 @@ def mark_files_with_prefix(video_path: Path, prefix: str):
 def process_queue():
     config = load_config()
 
+    # Resolve the videos folder (default: BASE_DIR/videos)
+    videos_folder_name = config.get("videos_folder", "videos")
+    video_dir = BASE_DIR / videos_folder_name
+    video_dir.mkdir(exist_ok=True)  # auto-create if missing
+
     # First-time run check: authenticate early if token does not exist yet
     token_path = BASE_DIR / config.get("token_file", "token.json")
     if not token_path.exists():
@@ -389,21 +410,21 @@ def process_queue():
         if not youtube:
             return
         logger.info("[OK] Authorization successful! Your channel is now connected.")
-        logger.info("You can now drop videos directly into this folder.")
+        logger.info(f"Drop videos into the '{videos_folder_name}/' folder to upload them.")
 
-    # Find any video file directly in the folder that hasn't already been processed
+    # Scan the videos subfolder for unprocessed video files
     video_files = [
-        f for f in sorted(BASE_DIR.iterdir())
+        f for f in sorted(video_dir.iterdir())
         if f.is_file()
         and f.suffix.lower() in VIDEO_EXTENSIONS
         and not f.name.startswith(("[DONE]", "[FAILED]"))
     ]
 
     if not video_files:
-        logger.info(f"No pending videos found in: {BASE_DIR}")
+        logger.info(f"No pending videos found in: {video_dir}")
         return
 
-    logger.info(f"Found {len(video_files)} video(s) ready for upload.")
+    logger.info(f"Found {len(video_files)} video(s) ready for upload in '{videos_folder_name}/'")
 
     if token_path.exists():
         youtube = get_authenticated_service(config)
@@ -448,7 +469,7 @@ def process_queue():
                         publish_time_str
                     )
                     date_key = target_local.strftime("%Y-%m-%d")
-                    booked_dates.add(date_key)   # reserve this date immediately
+                    booked_dates.add(date_key)
                     save_schedule_log(booked_dates)
                     logger.info(f"Target Scheduled Release: {target_local.strftime('%Y-%m-%d %I:%M %p %Z')}")
 
