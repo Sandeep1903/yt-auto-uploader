@@ -10,6 +10,7 @@ Videos go in the 'videos/' subfolder — keeps scripts and media separate.
 
 import os
 import sys
+import re
 import json
 import time
 import shutil
@@ -148,41 +149,48 @@ def get_authenticated_service(config):
 
 # ── Schedule log helpers ────────────────────────────────────────────────────
 
-def load_schedule_log() -> set:
+def load_schedule_log():
     """
-    Return a set of already-booked date strings like '2026-11-14'.
-    Past dates (before today) are pruned automatically and the file is
-    updated on disk so it stays clean over time.
+    Return (booked_dates: set, video_status: dict).
+    booked_dates contains booked date strings like '2026-11-14'.
+    video_status maps video_name -> {"youtube": bool, "instagram": bool}.
+    Past dates (before today) are pruned automatically.
     """
     today = datetime.now().date()
-    raw: set = set()
+    raw_dates: set = set()
+    video_status: dict = {}
 
     if SCHEDULE_LOG_FILE.exists():
         try:
             with open(SCHEDULE_LOG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                raw = set(data.get("booked_dates", []))
+                raw_dates = set(data.get("booked_dates", []))
+                video_status = data.get("video_status", {})
         except Exception as e:
             logger.warning(f"Could not read schedule_log.json: {e}")
 
     # Keep only today and future dates
-    cleaned = {d for d in raw if datetime.strptime(d, "%Y-%m-%d").date() >= today}
+    cleaned_dates = {d for d in raw_dates if datetime.strptime(d, "%Y-%m-%d").date() >= today}
 
-    # If we actually removed something, persist the pruned version right away
-    if cleaned != raw:
-        removed = sorted(raw - cleaned)
+    # If we removed past dates, persist right away
+    if cleaned_dates != raw_dates:
+        removed = sorted(raw_dates - cleaned_dates)
         logger.info(f"Pruned {len(removed)} past date(s) from schedule_log.json: {removed}")
-        save_schedule_log(cleaned)
+        save_schedule_log(cleaned_dates, video_status)
 
-    return cleaned
+    return cleaned_dates, video_status
 
 
-def save_schedule_log(booked_dates: set):
-    """Persist the booked dates back to disk."""
+def save_schedule_log(booked_dates: set, video_status: dict = None):
+    """Persist booked dates and per-platform video status to disk."""
     try:
         sorted_dates = sorted(booked_dates)
+        payload = {
+            "booked_dates": sorted_dates,
+            "video_status": video_status or {}
+        }
         with open(SCHEDULE_LOG_FILE, "w", encoding="utf-8") as f:
-            json.dump({"booked_dates": sorted_dates}, f, indent=2)
+            json.dump(payload, f, indent=2)
     except Exception as e:
         logger.warning(f"Could not save schedule_log.json: {e}")
 
@@ -254,16 +262,19 @@ def next_free_date(booked_dates: set, publish_time_str: str) -> tuple:
 
 
 def parse_metadata(video_path: Path, config: dict):
-    base_name = video_path.stem
-    title = base_name.replace("_", " ").replace("-", " ").strip()
-    description = f"Uploaded automatically via YouTube Auto-Uploader on {datetime.now().strftime('%Y-%m-%d')}."
+    clean_stem = re.sub(r"^\[(DONE|FAILED)\]\s*", "", video_path.stem, flags=re.IGNORECASE).strip()
+    title = clean_stem.replace("_", " ").replace("-", " ").strip()
+    description = f"Uploaded automatically via Auto-Uploader on {datetime.now().strftime('%Y-%m-%d')}."
     tags = list(config.get("default_tags", ["video"]))
     category_id = str(config.get("default_category_id", "22"))
     custom_publish_at = None
 
-    # Check companion .json (e.g. MyVideo.json)
-    json_path = video_path.with_suffix(".json")
-    if json_path.exists():
+    parent = video_path.parent
+
+    # Check companion .json (e.g. MyVideo.json or CleanStem.json)
+    json_candidates = [video_path.with_suffix(".json"), parent / f"{clean_stem}.json"]
+    json_path = next((p for p in json_candidates if p.exists()), None)
+    if json_path:
         try:
             with open(json_path, "r", encoding="utf-8") as f:
                 meta = json.load(f)
@@ -276,31 +287,39 @@ def parse_metadata(video_path: Path, config: dict):
         except Exception as e:
             logger.warning(f"Error reading {json_path.name}: {e}")
 
-    # Check companion .txt (e.g. MyVideo.txt)
-    elif (txt_path := video_path.with_suffix(".txt")).exists():
-        try:
-            with open(txt_path, "r", encoding="utf-8") as f:
-                lines = [line.rstrip() for line in f.readlines()]
-                if len(lines) >= 1 and lines[0].strip():
-                    title = lines[0].strip()
-                if len(lines) >= 2 and lines[1].strip():
-                    tags = [t.strip() for t in lines[1].split(",") if t.strip()]
-                if len(lines) >= 3:
-                    description = "\n".join(lines[2:]).strip()
-            logger.info(f"Loaded metadata from {txt_path.name}")
-        except Exception as e:
-            logger.warning(f"Error reading {txt_path.name}: {e}")
+    # Check companion .txt (e.g. MyVideo.txt or CleanStem.txt)
+    else:
+        txt_candidates = [video_path.with_suffix(".txt"), parent / f"{clean_stem}.txt"]
+        txt_path = next((p for p in txt_candidates if p.exists()), None)
+        if txt_path:
+            try:
+                with open(txt_path, "r", encoding="utf-8") as f:
+                    lines = [line.rstrip() for line in f.readlines()]
+                    if len(lines) >= 1 and lines[0].strip():
+                        title = lines[0].strip()
+                    if len(lines) >= 2 and lines[1].strip():
+                        tags = [t.strip() for t in lines[1].split(",") if t.strip()]
+                    if len(lines) >= 3:
+                        description = "\n".join(lines[2:]).strip()
+                logger.info(f"Loaded metadata from {txt_path.name}")
+            except Exception as e:
+                logger.warning(f"Error reading {txt_path.name}: {e}")
 
-    # Check companion thumbnail image (e.g. MyVideo.jpg or MyVideo.png)
+    # Check companion thumbnail image (avoiding auto-generated .mp4.jpg)
     thumbnail_path = None
     for ext in IMAGE_EXTENSIONS:
-        thumb_candidate = video_path.with_suffix(ext)
-        if thumb_candidate.exists():
-            thumbnail_path = thumb_candidate
+        candidates = [
+            video_path.with_suffix(ext),
+            parent / f"{clean_stem}{ext}"
+        ]
+        found = next((c for c in candidates if c.exists() and not c.name.endswith(".mp4.jpg")), None)
+        if found:
+            thumbnail_path = found
             break
 
     return {
         "title": title,
+        "clean_stem": clean_stem,
         "description": description,
         "tags": tags,
         "category_id": category_id,
@@ -473,7 +492,7 @@ def process_queue():
     )
 
     # Load the persistent schedule log for YouTube
-    booked_dates = load_schedule_log()
+    booked_dates, video_status = load_schedule_log()
     if enable_yt:
         logger.info(f"Already-booked YouTube dates: {sorted(booked_dates) or 'none'}")
 
@@ -486,72 +505,84 @@ def process_queue():
             continue
 
         metadata = parse_metadata(video, config)
+        clean_stem = metadata.get("clean_stem") or video.stem
+        status = video_status.setdefault(clean_stem, {"youtube": False, "instagram": False})
 
-        # ── YouTube Scheduling ──────────────────────────────────────────────
-        publish_at_utc = None
-        date_key = None
-        if enable_yt and youtube and config.get("schedule_publish", True):
-            if metadata.get("custom_publish_at"):
-                publish_at_utc = metadata["custom_publish_at"]
-            else:
-                publish_time_str = config.get("publish_time", "18:00")
-                custom = ask_custom_date(video.name, publish_time_str)
-                if custom:
-                    publish_at_utc, target_local, date_key = custom
-                    booked_dates.add(date_key)
-                    save_schedule_log(booked_dates)
-                else:
-                    publish_at_utc, target_local = next_free_date(
-                        booked_dates,
-                        publish_time_str
-                    )
-                    date_key = target_local.strftime("%Y-%m-%d")
-                    booked_dates.add(date_key)
-                    save_schedule_log(booked_dates)
-                    logger.info(f"Target YouTube Release: {target_local.strftime('%Y-%m-%d %I:%M %p %Z')}")
-
+        # ── 1. YouTube Upload ────────────────────────────────────────────────
         yt_ok = False
-        ig_ok = False
-
-        # ── 1. Upload to YouTube ─────────────────────────────────────────────
-        if enable_yt and youtube:
-            try:
-                upload_video_chunked(
-                    youtube=youtube,
-                    video_path=video,
-                    metadata=metadata,
-                    publish_at_utc=publish_at_utc,
-                    made_for_kids=config.get("made_for_kids", False)
-                )
+        if enable_yt:
+            if status.get("youtube"):
+                logger.info(f"[YouTube] Video '{clean_stem}' was already uploaded to YouTube. Skipping.")
                 yt_ok = True
-            except Exception as e:
-                logger.error(f"[YouTube] Upload failed for {video.name}: {e}", exc_info=True)
-                if date_key:
-                    booked_dates.discard(date_key)
-                    save_schedule_log(booked_dates)
+            elif youtube:
+                publish_at_utc = None
+                date_key = None
+                if config.get("schedule_publish", True):
+                    if metadata.get("custom_publish_at"):
+                        publish_at_utc = metadata["custom_publish_at"]
+                    else:
+                        publish_time_str = config.get("publish_time", "18:00")
+                        custom = ask_custom_date(video.name, publish_time_str)
+                        if custom:
+                            publish_at_utc, target_local, date_key = custom
+                            booked_dates.add(date_key)
+                            save_schedule_log(booked_dates, video_status)
+                        else:
+                            publish_at_utc, target_local = next_free_date(
+                                booked_dates,
+                                publish_time_str
+                            )
+                            date_key = target_local.strftime("%Y-%m-%d")
+                            booked_dates.add(date_key)
+                            save_schedule_log(booked_dates, video_status)
+                            logger.info(f"Target YouTube Release: {target_local.strftime('%Y-%m-%d %I:%M %p %Z')}")
 
-        # ── 2. Upload to Instagram ───────────────────────────────────────────
-        if enable_ig and ig_client:
-            try:
-                as_reel = config.get("instagram", {}).get("as_reel", True)
-                upload_video_to_instagram(
-                    cl=ig_client,
-                    video_path=video,
-                    metadata=metadata,
-                    as_reel=as_reel
-                )
+                try:
+                    upload_video_chunked(
+                        youtube=youtube,
+                        video_path=video,
+                        metadata=metadata,
+                        publish_at_utc=publish_at_utc,
+                        made_for_kids=config.get("made_for_kids", False)
+                    )
+                    yt_ok = True
+                    status["youtube"] = True
+                    save_schedule_log(booked_dates, video_status)
+                except Exception as e:
+                    logger.error(f"[YouTube] Upload failed for {video.name}: {e}")
+                    if date_key:
+                        booked_dates.discard(date_key)
+                        save_schedule_log(booked_dates, video_status)
+
+        # ── 2. Instagram Upload ──────────────────────────────────────────────
+        ig_ok = False
+        if enable_ig:
+            if status.get("instagram"):
+                logger.info(f"[Instagram] Video '{clean_stem}' was already uploaded to Instagram. Skipping.")
                 ig_ok = True
-            except Exception as e:
-                logger.error(f"[Instagram] Upload failed for {video.name}: {e}", exc_info=True)
+            elif ig_client:
+                try:
+                    as_reel = config.get("instagram", {}).get("as_reel", True)
+                    upload_video_to_instagram(
+                        cl=ig_client,
+                        video_path=video,
+                        metadata=metadata,
+                        as_reel=as_reel
+                    )
+                    ig_ok = True
+                    status["instagram"] = True
+                    save_schedule_log(booked_dates, video_status)
+                except Exception as e:
+                    logger.error(f"[Instagram] Upload failed for {video.name}: {e}")
 
         # ── Status Check ─────────────────────────────────────────────────────
-        all_succeeded = (not enable_yt or yt_ok) and (not enable_ig or ig_ok)
+        all_succeeded = (not enable_yt or status.get("youtube")) and (not enable_ig or status.get("instagram"))
         if all_succeeded:
             mark_files_with_prefix(video, "[DONE]")
-            logger.info(f"Upload complete! Marked as '[DONE] {video.name}'")
+            logger.info(f"Upload complete on all active platforms! Marked as '[DONE] {video.name}'")
         else:
             mark_files_with_prefix(video, "[FAILED]")
-            logger.warning(f"Upload encountered errors. Marked as '[FAILED] {video.name}'")
+            logger.warning(f"Upload incomplete. Marked as '[FAILED] {video.name}'")
 
 
 if __name__ == "__main__":
